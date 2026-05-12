@@ -52,6 +52,7 @@ RUN set -eux; \
       sudo \
       tar \
       telnet \
+      tini \
       traceroute \
       tree \
       tzdata \
@@ -64,3 +65,5 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*
 
 EXPOSE 22
+
+ENTRYPOINT ["/usr/bin/tini", "--"]

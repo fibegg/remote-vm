@@ -4,9 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # curl: to vendor xterm.js at build time so the runtime is offline-capable.
-# tini-style PID 1 handled by uvicorn itself.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/web
@@ -33,4 +32,5 @@ USER app
 
 EXPOSE 7681
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7681", "--proxy-headers", "--forwarded-allow-ips=*"]
