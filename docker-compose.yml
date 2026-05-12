@@ -1,5 +1,36 @@
 name: remote-vm
 
+x-fibe.gg:
+  metadata:
+    description: Browser-accessible Ubuntu 24.04 remote VM with SSH isolated behind a FastAPI/xterm gateway, iframe-ready cookies, CSP frame ancestors, and hot-reloadable gateway source.
+    category: Development
+  variables:
+    subdomain:
+      name: Subdomain
+      required: false
+      default: remote-vm
+      validation: "/^(@|[a-z0-9]+(-[a-z0-9]+)*)$/"
+      path: services.web.labels.fibe.gg/subdomain
+    branch:
+      name: Git branch
+      required: false
+      default: main
+    web_password:
+      name: Web terminal password
+      required: false
+      random: true
+      sensitive: true
+    ssh_password:
+      name: VM SSH password
+      required: false
+      random: true
+      sensitive: true
+    session_secret:
+      name: Session signing secret
+      required: false
+      random: true
+      sensitive: true
+
 services:
   # ---------------------------------------------------------------------
   # Ubuntu 24.04 SSH server. Port 22 is NOT published to the host —
@@ -8,78 +39,11 @@ services:
   remote-vm:
     build:
       context: .
-      dockerfile_inline: |
-        FROM ubuntu:24.04
-
-        ENV DEBIAN_FRONTEND=noninteractive
-        ENV LANG=en_US.UTF-8
-        ENV LC_ALL=en_US.UTF-8
-        ENV TERM=xterm-256color
-
-        # 1. Make the VM behave like a normal Ubuntu install:
-        #    - Enable universe + multiverse + restricted (Docker base only ships main).
-        #    - Enable security/updates pockets so `apt upgrade` actually finds patches.
-        #    - Drop the `docker-clean` apt config that nukes /var/lib/apt/lists after every install
-        #      (that's why `apt install <thing>` returned "0 newly installed" — no package index).
-        # 2. Pre-install the toolbelt a real ubuntu user expects (software-properties-common
-        #    so add-apt-repository works, gnupg for third-party repo keys, ca-certificates, etc.).
-        RUN set -eux; \
-            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-              sed -i 's/^Components: .*/Components: main universe multiverse restricted/' /etc/apt/sources.list.d/ubuntu.sources; \
-            else \
-              sed -i 's/ main$/ main universe multiverse restricted/' /etc/apt/sources.list; \
-            fi; \
-            rm -f /etc/apt/apt.conf.d/docker-clean; \
-            echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/01keep-debs; \
-            apt-get update; \
-            apt-get install -y --no-install-recommends \
-              openssh-server \
-              sudo \
-              ca-certificates \
-              curl \
-              wget \
-              git \
-              vim \
-              nano \
-              less \
-              htop \
-              procps \
-              psmisc \
-              lsof \
-              file \
-              tree \
-              jq \
-              unzip \
-              zip \
-              tar \
-              xz-utils \
-              gzip \
-              bzip2 \
-              rsync \
-              iproute2 \
-              iputils-ping \
-              dnsutils \
-              netcat-openbsd \
-              traceroute \
-              telnet \
-              openssl \
-              gnupg \
-              lsb-release \
-              software-properties-common \
-              apt-transport-https \
-              build-essential \
-              pkg-config \
-              man-db \
-              manpages \
-              bash-completion \
-              locales \
-              tzdata; \
-            locale-gen en_US.UTF-8; \
-            rm -rf /var/lib/apt/lists/*
-
-        EXPOSE 22
+      dockerfile: Dockerfile.vm
 
     hostname: remote-vm
+    init: true
+    restart: unless-stopped
 
     environment:
       VM_USER: ${SSH_USER:-dev}
@@ -117,29 +81,54 @@ services:
     networks:
       - vmnet
 
+    labels:
+      fibe.gg/repo_url: "https://github.com/fibegg/remote-vm"
+      fibe.gg/dockerfile: "Dockerfile.vm"
+      fibe.gg/branch: ${BRANCH:-main}
+      fibe.gg/source_mount: "/workspace"
+      fibe.gg/production: "false"
+
   # ---------------------------------------------------------------------
   # FastAPI gateway: login form + signed-cookie session,
   # WebSocket → asyncssh bridge piped into xterm.js.
   # ---------------------------------------------------------------------
   web:
     build:
-      context: ./web
+      context: .
+      dockerfile: web/Dockerfile
     image: remote-vm-web:dev
-    container_name: remote-vm-web
+    init: true
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    working_dir: /workspace/web
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7681", "--reload", "--proxy-headers", "--forwarded-allow-ips=*"]
 
     depends_on:
       remote-vm:
         condition: service_healthy
 
     environment:
-      WEB_USER:        ${WEB_USER:-admin}
-      WEB_PASSWORD:    ${WEB_PASSWORD:-changeme}
-      SSH_HOST:        remote-vm
-      SSH_PORT:        "22"
-      SSH_USER:        ${SSH_USER:-dev}
-      SSH_PASSWORD:    ${SSH_PASSWORD:-devpass}
-      SESSION_SECRET:  ${SESSION_SECRET:-dev-only-change-me}
-      COOKIE_MAX_AGE_SECONDS: "28800"
+      WEB_USER: ${WEB_USER:-admin}
+      WEB_PASSWORD: ${WEB_PASSWORD:-changeme}
+      SSH_HOST: remote-vm
+      SSH_PORT: "22"
+      SSH_USER: ${SSH_USER:-dev}
+      SSH_PASSWORD: ${SSH_PASSWORD:-devpass}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-only-change-me}
+      COOKIE_NAME: ${COOKIE_NAME:-rvm_session}
+      COOKIE_MAX_AGE_SECONDS: ${COOKIE_MAX_AGE_SECONDS:-28800}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      COOKIE_PARTITIONED: ${COOKIE_PARTITIONED:-false}
+      CSP_MODE: ${CSP_MODE:-enforce}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-self}
+      STATIC_CACHE_SECONDS: ${STATIC_CACHE_SECONDS:-3600}
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7681/healthz').status==200 else 1)"]
@@ -154,6 +143,17 @@ services:
 
     networks:
       - vmnet
+
+    labels:
+      fibe.gg/repo_url: "https://github.com/fibegg/remote-vm"
+      fibe.gg/expose: "external:7681"
+      fibe.gg/dockerfile: "web/Dockerfile"
+      fibe.gg/branch: ${BRANCH:-main}
+      fibe.gg/source_mount: "/workspace"
+      fibe.gg/env_file: ".env.example"
+      fibe.gg/start_command: "uvicorn app:app --host 0.0.0.0 --port 7681 --reload --proxy-headers --forwarded-allow-ips=*"
+      fibe.gg/subdomain: "remote-vm"
+      fibe.gg/zerodowntime: "false"
 
 configs:
   sshd_config:

@@ -1,26 +1,26 @@
 # remote-vm
 
-A throwaway Ubuntu 24.04 VM running in Docker, with a browser-based terminal gated by an HTTP login form. SSH is **not** published to the host — the only way in is through the auth gateway.
+A throwaway Ubuntu 24.04 VM running in Docker, with a browser terminal gated by an HTTP login form. SSH is not published to the host; the only normal entrypoint is the FastAPI/xterm.js gateway.
 
 ## Architecture
 
-```
-[browser]  →  http://127.0.0.1:7681  →  web (FastAPI + xterm.js)  →  ssh:22  →  remote-vm (Ubuntu 24.04)
-                                       (signed cookie auth)         (internal docker network)
+```text
+[browser] -> http://127.0.0.1:7681 -> web (FastAPI + xterm.js) -> ssh:22 -> remote-vm (Ubuntu 24.04)
+                                      signed cookie auth             internal docker network
 ```
 
-- `remote-vm` — Ubuntu 24.04 + sshd, port 22 only on the internal `vmnet` network
-- `web` — FastAPI gateway: login page, signed-cookie session, WebSocket → `asyncssh` → PTY → xterm.js in the browser
-- xterm.js + addon-fit are vendored at image build time (no CDN at runtime)
+- `remote-vm`: Ubuntu 24.04 + sshd, reachable only on the internal `vmnet` network.
+- `web`: FastAPI gateway with signed-cookie login, WebSocket to `asyncssh`, and xterm.js.
+- xterm.js assets are vendored into the image at build time, so runtime does not depend on a CDN.
 
-## Run
+## Run Locally
 
 ```sh
-cp .env.example .env   # edit WEB_USER/WEB_PASSWORD/SESSION_SECRET
+cp .env.example .env
 docker compose up --build
 ```
 
-Open http://127.0.0.1:7681 → sign in with `WEB_USER` / `WEB_PASSWORD`. You get a full PTY into the VM.
+Open http://127.0.0.1:7681 and sign in with `WEB_USER` / `WEB_PASSWORD`.
 
 Try:
 
@@ -30,32 +30,47 @@ sudo apt install -y jq python3
 curl -I https://example.com
 ```
 
-## Adding pre-installed packages
-
-Edit the apt-get list inside `dockerfile_inline` (the `remote-vm` service in `docker-compose.yml`), then:
-
-```sh
-docker compose up --build
-```
-
-The change rebuilds the image. The VM filesystem (`/etc`, `/usr`, `/var`, `/opt`, `/root`, `/home`) is persisted in named volumes — to wipe state and start clean:
+To wipe VM state and start clean:
 
 ```sh
 docker compose down -v
 ```
 
-## Security model
+## Fibe / Likeable
 
-- The VM's port 22 is NEVER published to the host (`expose: ["22"]`, no `ports`). Only `web` can reach it across the docker network.
-- `web` is bound to `127.0.0.1:7681` only — not reachable from the LAN. Put a TLS-terminating reverse proxy (Caddy, nginx) in front for remote access.
-- Login uses constant-time comparison (`hmac.compare_digest`).
-- Session cookie is HTTP-only, signed via `itsdangerous` with `SESSION_SECRET`.
-- `secure=True` on the cookie is intentionally OFF for `http://localhost`. **Turn it on once you put HTTPS in front** — see `web/app.py`.
-- This is a single-user gateway (one `WEB_USER`/`WEB_PASSWORD`). For multi-user, swap the credential check for a real user store.
+This repository is source-mount ready for Fibe:
 
-## Files of note
+- `web` exposes HTTP with `fibe.gg/expose: external:7681`.
+- Both services point at `https://github.com/fibegg/remote-vm` and use `/workspace` as the Fibe source mount.
+- The gateway runs with `uvicorn --reload`, so edits under `web/` hot-reload in Fibe source-mounted dev mode.
+- `ports:` is only for local Docker; the Fibe pantry template omits it and routes through Traefik.
 
-- `docker-compose.yml` — both services + sshd config inline
-- `web/app.py` — gateway, login, WebSocket → SSH PTY bridge
-- `web/templates/{login,terminal}.html` — UI
-- `web/Dockerfile` — image build, vendors xterm.js
+For iframe deployments, set:
+
+```env
+COOKIE_SECURE=true
+COOKIE_SAMESITE=none
+COOKIE_PARTITIONED=true
+COOKIE_NAME=__Host-rvm_session
+FRAME_ANCESTORS="http://localhost:* http://127.0.0.1:* http://$ROOT_DOMAIN http://*.$ROOT_DOMAIN https://$ROOT_DOMAIN https://*.$ROOT_DOMAIN"
+CSP_MODE=enforce
+```
+
+Likeable can launch this as a non-default template by setting its `FIBE_TEMPLATE_VERSION_ID` to the imported Remote Vm template version. This does not require changing the global Fibe greenfield/Charge default.
+
+## Images
+
+The GitHub workflow builds:
+
+- `ghcr.io/fibegg/remote-vm:dev-main` from `Dockerfile.vm`
+- `ghcr.io/fibegg/remote-vm-web:dev-main` from `web/Dockerfile`
+
+Local Compose builds the same Dockerfiles directly.
+
+## Files
+
+- `docker-compose.yml`: local services plus Fibe labels and template metadata.
+- `Dockerfile.vm`: cacheable Ubuntu VM image.
+- `web/Dockerfile`: FastAPI gateway image, built from the repo root.
+- `web/app.py`: login, security headers, session cookies, and WebSocket to SSH bridge.
+- `web/templates/`: login and terminal UI.

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    env:
+      WEB_USER: admin
+      WEB_PASSWORD: changeme
+      SSH_USER: dev
+      SSH_PASSWORD: devpass
+      SESSION_SECRET: test-session-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: web/requirements.txt
+
+      - name: Install gateway dependencies
+        run: python -m pip install -r web/requirements.txt
+
+      - name: Compile Python
+        run: python -m compileall web
+
+      - name: Import FastAPI app
+        run: python -c "import sys; sys.path.insert(0, 'web'); import app; assert app.app.title == 'remote-vm-gateway'"
+
+      - name: Validate Compose
+        run: docker compose config

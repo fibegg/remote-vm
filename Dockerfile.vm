@@ -1,0 +1,66 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TERM=xterm-256color
+
+# Make the container behave like a normal Ubuntu install:
+# - enable universe/multiverse/restricted
+# - keep apt usable after first boot
+# - preinstall the expected debugging and build toolbelt
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+      sed -i 's/^Components: .*/Components: main universe multiverse restricted/' /etc/apt/sources.list.d/ubuntu.sources; \
+    else \
+      sed -i 's/ main$/ main universe multiverse restricted/' /etc/apt/sources.list; \
+    fi; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/01keep-debs; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      apt-transport-https \
+      bash-completion \
+      bzip2 \
+      build-essential \
+      ca-certificates \
+      curl \
+      dnsutils \
+      file \
+      git \
+      gnupg \
+      gzip \
+      htop \
+      iproute2 \
+      iputils-ping \
+      jq \
+      less \
+      locales \
+      lsb-release \
+      lsof \
+      man-db \
+      manpages \
+      nano \
+      netcat-openbsd \
+      openssh-server \
+      openssl \
+      pkg-config \
+      procps \
+      psmisc \
+      rsync \
+      software-properties-common \
+      sudo \
+      tar \
+      telnet \
+      traceroute \
+      tree \
+      tzdata \
+      unzip \
+      vim \
+      wget \
+      xz-utils \
+      zip; \
+    locale-gen en_US.UTF-8; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*
+
+EXPOSE 22
