@@ -11,7 +11,7 @@ A throwaway Ubuntu 24.04 VM running in Docker, with a browser terminal gated by 
 
 - `remote-vm`: Ubuntu 24.04 + sshd, reachable only on the internal `vmnet` network.
 - `web`: FastAPI gateway with signed-cookie login, WebSocket to `asyncssh`, and xterm.js.
-- xterm.js assets are vendored into the image at build time, so runtime does not depend on a CDN.
+- xterm.js assets are vendored under `web/static`, so source-mounted Fibe deployments do not depend on a CDN or hidden image-only files.
 
 ## Run Locally
 
