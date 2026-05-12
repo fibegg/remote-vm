@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>remote-vm — {{ ssh_user }}@{{ ssh_host }}</title>
+    <link rel="stylesheet" href="/static/xterm.css" />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; }
+      .topbar {
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 0.75rem;
+        background: #161b2c;
+        border-bottom: 1px solid #2a3149;
+        font-size: 0.85rem;
+      }
+      .topbar a, .topbar form { color: #e6e8f5; }
+      .topbar form { margin: 0; }
+      .topbar button {
+        background: transparent;
+        border: 1px solid #2a3149;
+        color: #e6e8f5;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+      #terminal {
+        height: calc(100vh - 36px);
+        width: 100vw;
+        padding: 4px;
+        box-sizing: border-box;
+        background: #000;
+      }
+      #status {
+        opacity: 0.7;
+        margin-right: auto;
+        margin-left: 0.75rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <span><strong>remote-vm</strong> — connected as <code>{{ user }}</code> → <code>{{ ssh_user }}@{{ ssh_host }}</code></span>
+      <span id="status">connecting…</span>
+      <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+    </div>
+    <div id="terminal"></div>
+
+    <script src="/static/xterm.js"></script>
+    <script src="/static/addon-fit.js"></script>
+    <script>
+      const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontSize: 14,
+        theme: { background: '#000000', foreground: '#e6e8f5' },
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(document.getElementById('terminal'));
+      fit.fit();
+
+      const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+      const status = document.getElementById('status');
+
+      ws.onopen = () => {
+        status.textContent = 'connected';
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+      ws.onclose = (ev) => {
+        status.textContent = `disconnected (${ev.code})`;
+        term.write('\r\n\x1b[33m[gateway] Disconnected. Reload to reconnect.\x1b[0m\r\n');
+      };
+      ws.onerror = () => {
+        status.textContent = 'error';
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'stdout') term.write(msg.data);
+        } catch (_) {
+          term.write(ev.data);
+        }
+      };
+
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'stdin', data }));
+        }
+      });
+
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          fit.fit();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          }
+        }, 100);
+      });
+    </script>
+  </body>
+</html>

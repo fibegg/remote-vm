@@ -1,0 +1,238 @@
+name: remote-vm
+
+services:
+  # ---------------------------------------------------------------------
+  # Ubuntu 24.04 SSH server. Port 22 is NOT published to the host —
+  # only the auth-gated FastAPI gateway can reach it (over the internal network).
+  # ---------------------------------------------------------------------
+  remote-vm:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM ubuntu:24.04
+
+        ENV DEBIAN_FRONTEND=noninteractive
+        ENV LANG=en_US.UTF-8
+        ENV LC_ALL=en_US.UTF-8
+        ENV TERM=xterm-256color
+
+        # 1. Make the VM behave like a normal Ubuntu install:
+        #    - Enable universe + multiverse + restricted (Docker base only ships main).
+        #    - Enable security/updates pockets so `apt upgrade` actually finds patches.
+        #    - Drop the `docker-clean` apt config that nukes /var/lib/apt/lists after every install
+        #      (that's why `apt install <thing>` returned "0 newly installed" — no package index).
+        # 2. Pre-install the toolbelt a real ubuntu user expects (software-properties-common
+        #    so add-apt-repository works, gnupg for third-party repo keys, ca-certificates, etc.).
+        RUN set -eux; \
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+              sed -i 's/^Components: .*/Components: main universe multiverse restricted/' /etc/apt/sources.list.d/ubuntu.sources; \
+            else \
+              sed -i 's/ main$/ main universe multiverse restricted/' /etc/apt/sources.list; \
+            fi; \
+            rm -f /etc/apt/apt.conf.d/docker-clean; \
+            echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/01keep-debs; \
+            apt-get update; \
+            apt-get install -y --no-install-recommends \
+              openssh-server \
+              sudo \
+              ca-certificates \
+              curl \
+              wget \
+              git \
+              vim \
+              nano \
+              less \
+              htop \
+              procps \
+              psmisc \
+              lsof \
+              file \
+              tree \
+              jq \
+              unzip \
+              zip \
+              tar \
+              xz-utils \
+              gzip \
+              bzip2 \
+              rsync \
+              iproute2 \
+              iputils-ping \
+              dnsutils \
+              netcat-openbsd \
+              traceroute \
+              telnet \
+              openssl \
+              gnupg \
+              lsb-release \
+              software-properties-common \
+              apt-transport-https \
+              build-essential \
+              pkg-config \
+              man-db \
+              manpages \
+              bash-completion \
+              locales \
+              tzdata; \
+            locale-gen en_US.UTF-8; \
+            rm -rf /var/lib/apt/lists/*
+
+        EXPOSE 22
+
+    hostname: remote-vm
+
+    environment:
+      VM_USER: ${SSH_USER:-dev}
+      VM_PASSWORD: ${SSH_PASSWORD:-devpass}
+
+    configs:
+      - source: remote_entrypoint
+        target: /run/configs/remote-entrypoint.sh
+        mode: 0444
+      - source: sshd_config
+        target: /run/configs/sshd_config
+        mode: 0444
+
+    command: ["bash", "/run/configs/remote-entrypoint.sh"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 22"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+    # No host port published intentionally — gated by `web`.
+    expose:
+      - "22"
+
+    volumes:
+      - remote_etc:/etc
+      - remote_usr:/usr
+      - remote_var:/var
+      - remote_opt:/opt
+      - remote_root:/root
+      - remote_home:/home
+
+    networks:
+      - vmnet
+
+  # ---------------------------------------------------------------------
+  # FastAPI gateway: login form + signed-cookie session,
+  # WebSocket → asyncssh bridge piped into xterm.js.
+  # ---------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+    image: remote-vm-web:dev
+    container_name: remote-vm-web
+
+    depends_on:
+      remote-vm:
+        condition: service_healthy
+
+    environment:
+      WEB_USER:        ${WEB_USER:-admin}
+      WEB_PASSWORD:    ${WEB_PASSWORD:-changeme}
+      SSH_HOST:        remote-vm
+      SSH_PORT:        "22"
+      SSH_USER:        ${SSH_USER:-dev}
+      SSH_PASSWORD:    ${SSH_PASSWORD:-devpass}
+      SESSION_SECRET:  ${SESSION_SECRET:-dev-only-change-me}
+      COOKIE_MAX_AGE_SECONDS: "28800"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7681/healthz').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+    ports:
+      # Bind to localhost only — same convention as the original ttyd reference.
+      - "127.0.0.1:${WEB_PORT:-7681}:7681"
+
+    networks:
+      - vmnet
+
+configs:
+  sshd_config:
+    content: |
+      Port 22
+      ListenAddress 0.0.0.0
+
+      PermitRootLogin no
+      PasswordAuthentication yes
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PubkeyAuthentication no
+
+      UsePAM yes
+      PrintMotd no
+      X11Forwarding no
+      AllowTcpForwarding yes
+      PermitTunnel no
+
+      AcceptEnv LANG LC_*
+      Subsystem sftp /usr/lib/openssh/sftp-server
+
+  remote_entrypoint:
+    # Note: $$ escapes literal $ for docker-compose interpolation,
+    # so the running script sees a real $VAR in bash.
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      : "$${VM_USER:=dev}"
+      : "$${VM_PASSWORD:=devpass}"
+
+      mkdir -p /run/sshd
+      chmod 0755 /run/sshd
+
+      ssh-keygen -A
+
+      cp /run/configs/sshd_config /etc/ssh/sshd_config
+      chmod 0644 /etc/ssh/sshd_config
+
+      if ! id -u "$${VM_USER}" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash "$${VM_USER}"
+      fi
+
+      echo "$${VM_USER}:$${VM_PASSWORD}" | chpasswd
+      usermod -aG sudo "$${VM_USER}"
+
+      printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$${VM_USER}" > /etc/sudoers.d/90-vm-user
+      chmod 0440 /etc/sudoers.d/90-vm-user
+
+      mkdir -p "/home/$${VM_USER}/workspace"
+      chown -R "$${VM_USER}:$${VM_USER}" "/home/$${VM_USER}"
+
+      # Refresh apt index in the background on first boot — the build wiped /var/lib/apt/lists,
+      # and the named volume on /var would otherwise serve stale (empty) state. Best-effort:
+      # if there's no network yet, the user can always re-run `sudo apt update`.
+      if [ ! -d /var/lib/apt/lists/partial ] || [ -z "$$(ls -A /var/lib/apt/lists 2>/dev/null | grep -v partial || true)" ]; then
+        ( apt-get update >/var/log/first-boot-apt-update.log 2>&1 || true ) &
+      fi
+
+      cat >/etc/profile.d/remote-vm-help.sh <<'EOF_HELP'
+      echo
+      echo "Remote Ubuntu-in-Docker VM (Ubuntu 24.04, main+universe+multiverse+restricted enabled)"
+      echo "Try:"
+      echo "  sudo apt update && sudo apt install -y python3 imagemagick"
+      echo "  sudo add-apt-repository ppa:deadsnakes/ppa"
+      echo "  curl -I https://example.com"
+      echo
+      EOF_HELP
+
+      exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+
+networks:
+  vmnet:
+
+volumes:
+  remote_etc:
+  remote_usr:
+  remote_var:
+  remote_opt:
+  remote_root:
+  remote_home:

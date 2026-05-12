@@ -1,0 +1,18 @@
+# Env & local config
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
